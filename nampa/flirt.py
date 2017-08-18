@@ -224,16 +224,17 @@ class FlirtException(Exception):
 
 
 class FlirtFunction(object):
-    def __init__(self, name, offset, negative_offset, is_local, is_collision):
+    def __init__(self, name, offset, negative_offset, is_local, is_collision, is_ref=False):
         self.name = name
         self.offset = offset
         self.negative_offset = negative_offset
         self.is_local = is_local
         self.is_collision = is_collision
+        self.is_ref = is_ref
 
     def __str__(self):
-        return '<{}: name={}, offset=0x{:04X}, negative_offset={}, is_local={}, is_collision={}>'.format(
-            self.__class__.__name__, self.name, self.offset, self.negative_offset, self.is_local, self.is_collision
+        return '<{}: name={}, offset=0x{:04X}, negative_offset={}, is_local={}, is_collision={}, is_ref={}>'.format(
+            self.__class__.__name__, self.name, self.offset, self.negative_offset, self.is_local, self.is_collision, self.is_ref
         )
 
 
@@ -378,7 +379,7 @@ def parse_referenced_function(f, version):
 
     name = bytearray(name).decode('ascii')
     log.debug('Referenced function: "{}" @ 0x{:04X}'.format(name, offset))
-    return FlirtFunction(name, offset, negative_offset, False, False)
+    return FlirtFunction(name, offset, negative_offset, False, False, True)
 
 
 def parse_referenced_functions(f, version):
@@ -551,9 +552,12 @@ def match_module(module, buff, addr, offset, callback):
             return False
 
     # TODO: referenced functions are not yet implemented in radare2
+    for funk in module.referenced_functions:
+        mlog.debug('Referenced function: {}, offset=0x{:04X}'.format(funk.name, funk.offset))
+        callback(addr, funk)
 
     for funk in module.public_functions:
-        mlog.debug('Function: {}, offset=0x{:04X}'.format(funk.name, funk.offset))
+        mlog.debug('Public function: {}, offset=0x{:04X}'.format(funk.name, funk.offset))
         callback(addr, funk)
 
     return True
