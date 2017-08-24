@@ -224,16 +224,18 @@ class FlirtException(Exception):
 
 
 class FlirtFunction(object):
-    def __init__(self, name, offset, negative_offset, is_local, is_collision):
+    def __init__(self, name, offset, negative_offset, is_local, is_collision, is_ref_funk):
         self.name = name
         self.offset = offset
         self.negative_offset = negative_offset
         self.is_local = is_local
         self.is_collision = is_collision
+        self.is_ref_funk = is_ref_funk
 
     def __str__(self):
-        return '<{}: name={}, offset=0x{:04X}, negative_offset={}, is_local={}, is_collision={}>'.format(
-            self.__class__.__name__, self.name, self.offset, self.negative_offset, self.is_local, self.is_collision
+        return '<{}: name={}, offset=0x{:04X}, negative_offset={}, is_local={}, is_collision={} is_ref_funk={}>'.format(
+            self.__class__.__name__, self.name, self.offset, self.negative_offset,
+            self.is_local, self.is_collision, self.is_ref_funk
         )
 
 
@@ -383,7 +385,7 @@ def parse_referenced_function(f, version):
 
     name = bytearray(name).decode('ascii')
     log.debug('Referenced function: "{}" @ 0x{:04X}'.format(name, offset))
-    return FlirtFunction(name, offset, negative_offset, False, False)
+    return FlirtFunction(name, offset, negative_offset, False, False, True)
 
 
 def parse_referenced_functions(f, version):
@@ -394,7 +396,7 @@ def parse_referenced_functions(f, version):
 
     referenced_functions = []
     for i in range(length):
-        referenced_functions.append(parse_referenced_function(f, version))
+        referenced_functions.append()
     return referenced_functions
 
 
@@ -432,8 +434,9 @@ def parse_public_function(f, version, offset):
     if not name_finished:
         log.info('Function name too long: {}'.format(name))
 
-    log.debug('Function "{}" @ 0x{:04X}'.format(name, offset))
-    return FlirtFunction(name, offset, False, is_local, is_collision), offset, flags
+    log.debug('Function "{}" @ 0x{:04X} - is_local: {}, is_collision: {}'.format(name, offset, is_local, is_collision))
+    log.debug('Got flag: %02x', b)
+    return FlirtFunction(name, offset, False, is_local, is_collision, False), offset, flags
 
 
 def parse_module(f, version, crc_length, crc16):
@@ -465,6 +468,7 @@ def parse_module(f, version, crc_length, crc16):
 
 
 def parse_modules(f, version):
+    log.debug('Parsing module');
     modules = list()
     while True:
         crc_length = binrw.read_u8(f)
@@ -558,7 +562,7 @@ def match_module(module, buff, addr, offset, callback):
     # TODO: referenced functions are not yet implemented in radare2
 
     for funk in module.public_functions:
-        mlog.debug('Function: {}, offset=0x{:04X}'.format(funk.name, funk.offset))
+        mlog.debug('Function: {}, addr=0x{:04X}, offset=0x{:04X}'.format(funk.name, addr, funk.offset))
         callback(addr, funk)
 
     return True
