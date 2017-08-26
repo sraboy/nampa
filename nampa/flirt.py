@@ -224,18 +224,20 @@ class FlirtException(Exception):
 
 
 class FlirtFunction(object):
-    def __init__(self, name, offset, negative_offset, is_local, is_collision, is_ref_funk):
+    def __init__(self, name, offset, negative_offset, is_local, is_collision, has_ref_funk, parent_funk):
         self.name = name
         self.offset = offset
         self.negative_offset = negative_offset
         self.is_local = is_local
         self.is_collision = is_collision
-        self.is_ref_funk = is_ref_funk
-
+        self.has_ref_funk = has_ref_funk
+        self.parent_funk = parent_funk
+        self.ref_funk = None
+        
     def __str__(self):
-        return '<{}: name={}, offset=0x{:04X}, negative_offset={}, is_local={}, is_collision={} is_ref_funk={}>'.format(
+        return '<{}: name={}, offset=0x{:04X}, negative_offset={}, is_local={}, is_collision={} has_ref_funk={}, parent_funk={} ref_funk={}>'.format(
             self.__class__.__name__, self.name, self.offset, self.negative_offset,
-            self.is_local, self.is_collision, self.is_ref_funk
+            self.is_local, self.is_collision, self.has_ref_funk, self.parent_funk.name if self.parent_funk is not None else None, self.ref_funk.name if self.ref_funk is not None else None
         )
 
 
@@ -361,7 +363,7 @@ def parse_tail_bytes(f, version):
     return tail_bytes
 
 
-def parse_referenced_function(f, version):
+def parse_referenced_function(f, version, parent_funk):
     if version >= 9:
         offset = read_multiple_bytes(f)
     else:
@@ -385,10 +387,10 @@ def parse_referenced_function(f, version):
 
     name = bytearray(name).decode('ascii')
     log.debug('Referenced function: "{}" @ 0x{:04X}'.format(name, offset))
-    return FlirtFunction(name, offset, negative_offset, False, False, True)
+    return FlirtFunction(name, offset, negative_offset, False, False, False, parent_funk)
 
 
-def parse_referenced_functions(f, version):
+def parse_referenced_functions(f, version, parent_funk):
     if version >= 8:
         length = binrw.read_u8(f)
     else:
@@ -396,7 +398,10 @@ def parse_referenced_functions(f, version):
 
     referenced_functions = []
     for i in range(length):
-        referenced_functions.append(parse_referenced_function(f, version))
+        func = parse_referenced_function(f, version, parent_funk)
+        parent_funk.ref_funk = func
+        log.debug(func)
+        referenced_functions.append(func)
     return referenced_functions
 
 
@@ -434,12 +439,13 @@ def parse_public_function(f, version, offset):
     if not name_finished:
         log.info('Function name too long: {}'.format(name))
 
-    log.debug('Function "{}" @ 0x{:04X} - is_local: {}, is_collision: {}'.format(name, offset, is_local, is_collision))
+    log.debug('Public Function "{}" @ 0x{:04X} - is_local: {}, is_collision: {}'.format(name, offset, is_local, is_collision))
     log.debug('Got flag: %02x', b)
-    return FlirtFunction(name, offset, False, is_local, is_collision, False), offset, flags
+    return FlirtFunction(name, offset, False, is_local, is_collision, False, None), offset, flags
 
 
 def parse_module(f, version, crc_length, crc16):
+    log.debug('Parsing module');
     if version >= 9:
         length = read_multiple_bytes(f)
     else:
@@ -448,10 +454,11 @@ def parse_module(f, version, crc_length, crc16):
 
     public_fuctions = []
     offset = 0
+    lastfunk = None
     while True:
-        func, offset, flags = parse_public_function(f, version, offset)
-        public_fuctions.append(func)
-
+        lastfunk, offset, flags = parse_public_function(f, version, offset)
+        public_fuctions.append(lastfunk)
+        log.debug(lastfunk)
         if flags & FlirtParseFlag.PARSE_MORE_PUBLIC_NAMES == 0:
             break
 
@@ -461,14 +468,14 @@ def parse_module(f, version, crc_length, crc16):
 
     referenced_functions = []
     if flags & FlirtParseFlag.PARSE_READ_REFERENCED_FUNCTIONS != 0:
-        referenced_functions = parse_referenced_functions(f, version)
+        lastfunk.has_ref_funk = True
+        referenced_functions = parse_referenced_functions(f, version, lastfunk)
 
     log.debug('Module length: {}'.format(length))
     return FlirtModule(crc_length, crc16, length, public_fuctions, tail_bytes, referenced_functions), flags
 
 
 def parse_modules(f, version):
-    log.debug('Parsing module');
     modules = list()
     while True:
         crc_length = binrw.read_u8(f)
@@ -543,6 +550,7 @@ def match_node_pattern(node, buff, offset):
 
     return True
 
+#matches = {}
 
 # TODO: Write tests
 def match_module(module, buff, addr, offset, callback):
@@ -561,9 +569,24 @@ def match_module(module, buff, addr, offset, callback):
 
     # TODO: referenced functions are not yet implemented in radare2
 
+    for funk in module.referenced_functions:
+        mlog.debug('Reference Function: {}, addr=0x{:04X}, offset=0x{:04X}'.format(funk.name, addr, funk.offset))
+        callee = callback(addr, funk)
+        #if funk.name not in matches:
+        #    matches[funk.name] = funk
+        #    callback(addr, funk)
+        #else:
+        #    mlog.debug('*** Skipping ref func: {}, addr=0x{:04X}, offset=0x{:04X}'.format(funk.name, addr, funk.offset))
+        
+    
     for funk in module.public_functions:
-        mlog.debug('Function: {}, addr=0x{:04X}, offset=0x{:04X}'.format(funk.name, addr, funk.offset))
-        callback(addr, funk)
+        mlog.debug('Public Function: {}, addr=0x{:04X}, offset=0x{:04X}'.format(funk.name, addr, funk.offset))
+        callee = callback(addr, funk)
+        #if funk.name not in matches:
+        #    matches[funk.name] = funk
+        #    callback(addr, funk)
+        #else:
+        #    mlog.debug('*** Skipping pub func: {}, addr=0x{:04X}, offset=0x{:04X}'.format(funk.name, addr, funk.offset))
 
     return True
 
