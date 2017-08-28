@@ -224,14 +224,12 @@ class FlirtException(Exception):
 
 
 class FlirtFunction(object):
-    def __init__(self, name, offset, negative_offset, is_local, is_collision, refd_by=None):
+    def __init__(self, name, offset, negative_offset, is_local, is_collision):
         self.name = name
         self.offset = offset
         self.negative_offset = negative_offset
         self.is_local = is_local
         self.is_collision = is_collision
-        self.refs_func    = None
-        self.refd_by = refd_by
 
     def __str__(self):
         return '<{}: name={}, offset=0x{:04X}, negative_offset={}, is_local={}, is_collision={}>'.format(
@@ -361,7 +359,7 @@ def parse_tail_bytes(f, version):
     return tail_bytes
 
 
-def parse_referenced_function(f, version, func):
+def parse_referenced_function(f, version):
     if version >= 9:
         offset = read_multiple_bytes(f)
     else:
@@ -385,10 +383,10 @@ def parse_referenced_function(f, version, func):
 
     name = bytearray(name).decode('ascii')
     log.debug('Referenced function: "{}" @ 0x{:04X}'.format(name, offset))
-    return FlirtFunction(name, offset, negative_offset, False, False, func)
+    return FlirtFunction(name, offset, negative_offset, False, False)
 
 
-def parse_referenced_functions(f, version, func):
+def parse_referenced_functions(f, version):
     if version >= 8:
         length = binrw.read_u8(f)
     else:
@@ -396,8 +394,7 @@ def parse_referenced_functions(f, version, func):
 
     referenced_functions = []
     for i in range(length):
-        func.refs_func = parse_referenced_function(f, version, func)
-        referenced_functions.append(func.refs_func)
+        referenced_functions.append(parse_referenced_function(f, version))
     return referenced_functions
 
 
@@ -448,10 +445,8 @@ def parse_module(f, version, crc_length, crc16):
 
     public_fuctions = []
     offset = 0
-    lastfunc = None
     while True:
         func, offset, flags = parse_public_function(f, version, offset)
-        lastfunc = func
         public_fuctions.append(func)
 
         if flags & FlirtParseFlag.PARSE_MORE_PUBLIC_NAMES == 0:
@@ -463,7 +458,7 @@ def parse_module(f, version, crc_length, crc16):
 
     referenced_functions = []
     if flags & FlirtParseFlag.PARSE_READ_REFERENCED_FUNCTIONS != 0:
-        referenced_functions = parse_referenced_functions(f, version, lastfunc)
+        referenced_functions = parse_referenced_functions(f, version)
 
     log.debug('Module length: {}'.format(length))
     return FlirtModule(crc_length, crc16, length, public_fuctions, tail_bytes, referenced_functions), flags
@@ -544,9 +539,9 @@ def match_node_pattern(node, buff, offset):
 
     return True
 
-first_pass_matches = {}
+
 # TODO: Write tests
-def match_module(module, buff, addr, offset, callbacks, first_pass):
+def match_module(module, buff, addr, offset, callback):
     # type: (FlirtModule, bytes, int) -> bool
     buff_size = len(buff) - offset
     mlog.debug('buff_size: 0x{:08X}'.format(buff_size))
@@ -560,133 +555,39 @@ def match_module(module, buff, addr, offset, callbacks, first_pass):
             mlog.debug('Tail: {:02X} - {:02X}'.format(tb.value, buff[offset+module.crc_length+tb.offset]))
             return False
 
-    # First pass, ignore ref'd functions and those with references
-    if first_pass:
-        for funk in module.public_functions:#[f for f in module.public_functions if f.refs_func is None]:
-            mlog.debug('Public Function (FIRSTPASS): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-            if not callbacks['firstpass'](addr, funk):
-                mlog.debug('%s already matched. Skipping...', funk.name)
-                return False
-                
-        #for funk in module.referenced_functions:
-        #    mlog.debug('Referenced Function (REF): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-        #    if not callbacks['secondpass'](addr, funk):
-        #        mlog.debug('%s already matched. Skipping...', funk.name)
-        
-                
-        #for funk in module.referenced_functions:
-        #    mlog.debug('Referenced Function (REF): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-        #    if not callbacks['firstpass'](addr, funk):
-        #        mlog.debug('%s already matched. Skipping...', funk.name)
-        #        return False
-            
-
-            #first_pass_matches[addr + funk.offset] = funk
-
-        return True # don't continue on to REF funcs
-    else:
-        for funk in [f for f in module.public_functions if f.refs_func is not None]:
-            mlog.debug('Public Function (FIRSTPASS): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-            if not callbacks['secondpass'](addr, funk):
-                mlog.debug('%s already matched. Skipping...', funk.name)
-                return False
-        #oldoffaddr=None
-        #for funk in module.referenced_functions:
-            #mlog.debug('Referenced Function (REF): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-            #oldoffaddr = callbacks['secondpass'](addr, funk)
-            #mlog.debug('Got oldoffaddr 0x%04x', oldoffaddr)
-
-                
-        #for funk in module.public_functions:
-        #    mlog.debug('Public Function (SECONDPASS): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-        #    if not callbacks['secondpass'](addr, funk):
-        #        mlog.debug('%s already matched. Skipping...', funk.name)
-        #        #return False
-
-        #for funk in set([f for f in module.public_functions if f.refs_func is not None or f.refd_by is not None]):
-        #    mlog.debug('Public Function (SECONDPASS): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-        #    if callbacks['matchrefs'](addr, funk, module.referenced_functions):
-        #        continue
+    for funk in module.public_functions:
+        mlog.debug('Public Function (FIRSTPASS): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
+        # The callback confirms whether it was really a match by checking whether it already
+        # got a match for this function name. If not, it returns True, and we'll continue. If
+        # it did, it returns False, meaning we should move on to the next match. This is done
+        # in the case of reference functions since they may match on several modules but only
+        # the first, where they're public functions, matters.
+        if not callback(addr, funk):
+            mlog.debug('%s already matched. Skipping...', funk.name)
+            return False
 
     return True
 
 
-def old_match_module(module, buff, addr, offset, callback, get_funcs_with_refs, ref_addrs=[]):
-    # type: (FlirtModule, bytes, int) -> bool
-    buff_size = len(buff) - offset
-    mlog.debug('buff_size: 0x{:08X}'.format(buff_size))
-    if module.crc_length < buff_size and module.crc16 != crc.crc16(buff[offset:offset+module.crc_length]):
-        mlog.debug('CRC: {:04X} - {:04X}'.format(module.crc16, crc.crc16(buff[offset:offset+module.crc_length])))
-        return False
-
-    for tb in module.tail_bytes:
-        if module.crc_length + tb.offset < buff_size \
-                and buff[offset+module.crc_length+tb.offset] != tb.value:
-            mlog.debug('Tail: {:02X} - {:02X}'.format(tb.value, buff[offset+module.crc_length+tb.offset]))
-            return False
-
-    # First pass, ignore functions with references
-    if get_funcs_with_refs is False:
-        #for funk in module.referenced_functions:
-        #    mlog.debug('Referenced Function: {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-        #    callback(addr, funk)
-        for funk in set([f for f in module.public_functions if f.refs_func is None]):# + module.referenced_functions):
-            mlog.debug('Public Function (NOREF): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-            funk.real_addr = callback(addr, funk)
-            mlog.debug('Set %s.real_addr: 0x%04x', funk.name, funk.real_addr)
-        for funk in [f for f in module.public_functions if f.refs_func is not None]:
-            mlog.debug('Public Function (REF): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-            #if funk.refs_func.offset + addr in ref_addrs:
-            #    mlog.debug('REF matches')
-            #    callback(addr, funk)
-            #else:
-            #    mlog.debug('REF does not match any in: %s', ref_addrs)
-            funk.real_addr = callback(addr, funk)
-            mlog.debug('Set %s.real_addr: 0x%04x', funk.name, funk.real_addr)
-    else:
-        for funk in module.referenced_functions:# + module.referenced_functions):
-            mlog.debug('Referenced Function (NOREF): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-            funk.real_addr = callback(addr, funk)
-            mlog.debug('Set %s.real_addr: 0x%04x', funk.name, funk.real_addr)
-
-        for funk in [f for f in module.public_functions if f.refs_func is not None]:
-            mlog.debug('Public Function (REF): {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-            if funk.refs_func.real_addr in ref_addrs:
-                mlog.debug('REF matches')
-                callback(addr, funk, True)
-            else:
-                mlog.debug('REF %s at 0x%04X not in: %s', funk.refs_func.name,
-                funk.refs_func.real_addr, ''.join(['0x{:04X}, '.format(l) for l in ref_addrs])  )
-                mlog.debug('funk.refs_func.real_addr: 0x%04x, funk.offset: 0x%04x, funk.refs_func.offset: 0x%04x, offset: 0x%04x, addr: 0x%04x',
-                funk.refs_func.real_addr, funk.offset, funk.refs_func.offset, offset, addr)
-
-
-    #for funk in module.public_functions:
-    #    mlog.debug('Public Function: {}, offset=0x{:04X}'.format(funk.name, funk.offset))
-    #    callback(addr, funk)
-
-    return get_funcs_with_refs
-
-
-def match_node(node, buff, addr, offset, callbacks, first_pass):
+def match_node(node, buff, addr, offset, callback):
     if match_node_pattern(node, buff, offset):
         mlog.debug('found prefix: {}'.format(pattern2string(node.pattern, node.variant_mask)))
         for child in node.children:
-            if match_node(child, buff, addr, offset + node.length, callbacks, first_pass):
+            if match_node(child, buff, addr, offset + node.length, callback):
                 return True
         for module in node.modules:
-            if match_module(module, buff, addr, offset + node.length, callbacks, first_pass):
+            if match_module(module, buff, addr, offset + node.length, callback):
                 return True
     return False
 
 
-def match_function(sig, buff, addr, callbacks, first_pass):
+def match_function(sig, buff, addr, callback):
     # type: (FlirtFile, bytes) -> bool
     # assert type(buff) is bytes
     if type(buff) is str:
         buff = bytes(buff)
 
     for child in sig.root.children:
-        if match_node(child, buff, addr, 0, callbacks, first_pass):
+        if match_node(child, buff, addr, 0, callback):
             return True
     return False
